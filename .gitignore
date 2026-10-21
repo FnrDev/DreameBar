@@ -1,0 +1,7 @@
+.build/
+DreameBar.app/
+.DS_Store
+*.log
+# Only the published screenshot; the others show private room names.
+screenshots/*
+!screenshots/dreamebar.png
