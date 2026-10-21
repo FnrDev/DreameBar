@@ -17,6 +17,92 @@ struct MapPoint: Equatable {
     let y: Int
 }
 
+/// An area to clean, as two opposite corners in robot millimetres.
+struct Zone: Identifiable, Equatable {
+    let id = UUID()
+    let a: MapPoint
+    let b: MapPoint
+
+    /// [x0, y0, x1, y1] with the smaller coordinates first.
+    var bounds: [Int] { [min(a.x, b.x), min(a.y, b.y), max(a.x, b.x), max(a.y, b.y)] }
+}
+
+/// A freehand area to clean. The robot only accepts rectangles, so the outline is covered with a few
+/// rectangles (`rects`) that are what actually gets cleaned.
+struct CleanArea: Identifiable {
+    let id = UUID()
+    let outline: [MapPoint]
+    let rects: [Zone]
+
+    /// Covers `outline` with at most `maxRects` rectangles: lay a grid over the shape, keep the cells whose
+    /// centre is inside, merge each row into runs, then stack rows whose runs line up into taller rectangles.
+    /// Exact stacking on fine grids is tried first (closest to the drawing); if that needs too many
+    /// rectangles, rows whose edges are within a cell are stacked too, and then coarser grids.
+    /// Every side stays wider than two map cells, the robot's minimum.
+    static func cover(_ outline: [MapPoint], grid: Int, maxRects: Int) -> [Zone]? {
+        guard outline.count >= 3, maxRects > 0 else { return nil }
+        let base = max(grid * 3, 150)
+        let span = max(outline.map(\.x).max()! - outline.map(\.x).min()!, outline.map(\.y).max()! - outline.map(\.y).min()!)
+        var attempts: [(step: Int, tolerance: Int)] = [(base, 0), (base * 3 / 2, 0), (base * 9 / 4, 0)]
+        var step = base
+        while step <= span { attempts.append((step, 1)); step = step * 3 / 2 }
+        for attempt in attempts where attempt.step <= max(span, base) {
+            if let rects = cover(outline, step: attempt.step, tolerance: attempt.tolerance), rects.count <= maxRects {
+                return rects
+            }
+        }
+        return nil
+    }
+
+    private static func cover(_ outline: [MapPoint], step: Int, tolerance: Int) -> [Zone]? {
+        let xs = outline.map(\.x), ys = outline.map(\.y)
+        let minX = xs.min()!, maxX = xs.max()!, minY = ys.min()!, maxY = ys.max()!
+        let cols = (maxX - minX) / step + 1, rows = (maxY - minY) / step + 1
+        var rects: [(c0: Int, c1: Int, r0: Int, r1: Int)] = []
+        // Rects that reached the previous row, with that row's run (compared against, so edges can't creep).
+        var open: [(index: Int, c0: Int, c1: Int)] = []
+        for r in 0..<rows {
+            var runs: [(Int, Int)] = []
+            var start: Int?
+            for c in 0...cols {
+                let inside = c < cols && contains(outline, x: Double(minX) + (Double(c) + 0.5) * Double(step),
+                                                  y: Double(minY) + (Double(r) + 0.5) * Double(step))
+                if inside, start == nil { start = c }
+                if !inside, let s = start { runs.append((s, c - 1)); start = nil }
+            }
+            var next: [(index: Int, c0: Int, c1: Int)] = []
+            for (c0, c1) in runs {
+                if let k = open.firstIndex(where: { abs($0.c0 - c0) <= tolerance && abs($0.c1 - c1) <= tolerance }) {
+                    let i = open.remove(at: k).index
+                    rects[i] = (min(rects[i].c0, c0), max(rects[i].c1, c1), rects[i].r0, r)
+                    next.append((i, c0, c1))
+                } else {
+                    rects.append((c0, c1, r, r))
+                    next.append((rects.count - 1, c0, c1))
+                }
+            }
+            open = next
+        }
+        guard !rects.isEmpty else { return nil }
+        return rects.map {
+            Zone(a: MapPoint(x: minX + $0.c0 * step, y: minY + $0.r0 * step),
+                 b: MapPoint(x: minX + ($0.c1 + 1) * step, y: minY + ($0.r1 + 1) * step))
+        }
+    }
+
+    /// Even-odd point-in-polygon test.
+    private static func contains(_ poly: [MapPoint], x: Double, y: Double) -> Bool {
+        var inside = false
+        var j = poly.count - 1
+        for i in poly.indices {
+            let (xi, yi, xj, yj) = (Double(poly[i].x), Double(poly[i].y), Double(poly[j].x), Double(poly[j].y))
+            if (yi > y) != (yj > y), x < (xj - xi) * (y - yi) / (yj - yi) + xi { inside.toggle() }
+            j = i
+        }
+        return inside
+    }
+}
+
 /// One point of the cleaning path; `move` starts a new stroke instead of drawing a line to it.
 struct PathPoint: Equatable {
     let point: MapPoint
@@ -81,6 +167,26 @@ struct VacuumMap {
     mutating func apply(_ frame: MapFrame) {
         if frame.isFull { path = frame.path } else { path += frame.path }
         if let robot = frame.robot { robotMM = robot }
+    }
+
+    /// Inverse of `cellPoint`: a display-cell position back to robot millimetres.
+    func mapPoint(_ cell: CGPoint) -> MapPoint {
+        let dx = Double(cell.x) + Double(cropX), dy = Double(cell.y) + Double(cropY)
+        let w = Double(sourceWidth), h = Double(sourceHeight)
+        let (x, y): (Double, Double)
+        switch rotation {
+        case 90: (x, y) = (w - dy, h - dx)
+        case 180: (x, y) = (w - dx, dy)
+        case 270: (x, y) = (dy, dx)
+        default: (x, y) = (dx, h - dy)
+        }
+        return MapPoint(x: left + Int((x * Double(grid)).rounded()), y: top + Int((y * Double(grid)).rounded()))
+    }
+
+    /// A zone's rectangle in display cells, or nil if it falls outside this map.
+    func cellRect(_ zone: Zone) -> CGRect? {
+        guard let a = cellPoint(zone.a), let b = cellPoint(zone.b) else { return nil }
+        return CGRect(x: min(a.x, b.x), y: min(a.y, b.y), width: abs(a.x - b.x), height: abs(a.y - b.y))
     }
 
     func cellPoint(_ p: MapPoint) -> CGPoint? {

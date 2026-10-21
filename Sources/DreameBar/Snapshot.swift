@@ -18,6 +18,24 @@ enum Snapshot {
                     render(ContentView().environmentObject(store), appearance: appearance, scheme: scheme,
                            to: "\(dir)/live-\(scheme).png")
                 }
+                // Zone mode with two freehand sample shapes, traced the same way a drag would add them.
+                if let map = store.map {
+                    store.mode = .zone
+                    let w = CGFloat(map.width), h = CGFloat(map.height)
+                    func trace(cx: CGFloat, cy: CGFloat, rx: CGFloat, ry: CGFloat, wobble: CGFloat) -> [CGPoint] {
+                        (0..<72).map { i in
+                            let a = CGFloat(i) / 72 * 2 * .pi, r = 1 + wobble * sin(3 * a)
+                            return CGPoint(x: w * (cx + rx * r * cos(a)), y: h * (cy + ry * r * sin(a)))
+                        }
+                    }
+                    for message in [store.addArea(trace(cx: 0.33, cy: 0.62, rx: 0.13, ry: 0.09, wobble: 0)),
+                                    store.addArea(trace(cx: 0.72, cy: 0.3, rx: 0.12, ry: 0.1, wobble: 0.25))] {
+                        if let message { print("sample shape:", message) }
+                    }
+                    print("sample shapes use", store.areas.map(\.rects.count), "rectangles")
+                    render(ContentView().environmentObject(store), appearance: .darkAqua, scheme: "dark",
+                           to: "\(dir)/live-zone-dark.png")
+                }
                 exit(0)
             }
             return

@@ -12,6 +12,7 @@ My robot vacuum has an iPhone app. My Mac doesn't. DreameBar is a small native m
 
 - **Live floor plan.** Your robot's real map, drawn the same way up as in the Dreamehome app, with room colours, room names (custom names in any language, including Arabic) and the dock.
 - **Clean the whole house or just some rooms.** Switch between **All** and **Room**, tap rooms on the map to pick them, then press play.
+- **Draw any shape to clean.** In **Zone** mode, trace around a spot on the map. The robot only accepts rectangles, so DreameBar fills your shape with up to 10 rectangles and shades exactly what will be cleaned.
 - **Pause, resume and send it home** from the same panel.
 - **Live updates.** While the robot cleans, its position and cleaning path update on the map in real time, along with status, battery, cleaned area and runtime.
 - **Rename the robot** (double-click the name). The name is stored on your Mac only; see [Limitations](#limitations).
@@ -62,7 +63,7 @@ Diagnostics go to `~/Library/Logs/DreameBar.log`. It never contains tokens, pass
 
 - **Unofficial.** This uses Dreame's private cloud API, which can change with any app update. Use it at your own risk.
 - **Rename is local only.** No public project has worked out how the app renames a robot in the cloud, and the Dreamehome app rejects traffic inspection (certificate pinning). To change the name everywhere, rename it in the Dreamehome app.
-- **No zone cleaning** (drawing a box to clean) yet.
+- **Zone shapes are approximated with rectangles.** Rounded shapes follow your line closely; thin diagonal strips spill over a bit. The 10-rectangle limit is a cautious guess at what the robot accepts.
 - Tested on one robot (`dreame.vacuum.r2423`). Room cleaning parameters differ slightly between models, so other models may need tweaks.
 
 ## Credits

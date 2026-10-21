@@ -43,6 +43,7 @@ struct VacuumStatus {
 enum CleanMode: String, CaseIterable {
     case room = "Room"
     case all = "All"
+    case zone = "Zone"
 }
 
 @MainActor
@@ -56,6 +57,10 @@ final class VacuumStore: ObservableObject {
     @Published var map: VacuumMap?
     @Published var mode: CleanMode = .all
     @Published var selectedRooms: Set<Int> = []
+    /// Shapes drawn in Zone mode, in robot millimetres so they survive map reloads.
+    @Published var areas: [CleanArea] = []
+    /// Rectangles sent for all drawn shapes together; more than this and the robot may refuse the task.
+    static let maxRects = 10
     @Published var roomsError: String?
     @Published var loadingMap = false
 
@@ -141,7 +146,7 @@ final class VacuumStore: ObservableObject {
         stopLive()
         Keychain.clear()
         cloud = DreameCloud(session: nil)
-        devices = []; device = nil; map = nil; selectedRooms = []
+        devices = []; device = nil; map = nil; selectedRooms = []; areas = []
         status = VacuumStatus()
         phase = .signedOut
     }
@@ -172,7 +177,7 @@ final class VacuumStore: ObservableObject {
     func select(_ d: DreameDevice) {
         device = d
         UserDefaults.standard.set(d.did, forKey: "deviceId")
-        map = nil; selectedRooms = []
+        map = nil; selectedRooms = []; areas = []
         Task { await refreshStatus(); await loadRooms(); startLive() }
     }
 
@@ -360,11 +365,52 @@ final class VacuumStore: ObservableObject {
     func primaryAction() {
         if status.isCleaning { pause() }
         else if status.isPaused || mode == .all { cleanWholeHouse() }
+        else if mode == .zone { cleanZones() }
         else { cleanSelectedRooms() }
     }
 
     var primaryActionEnabled: Bool {
-        !busy && (status.isCleaning || status.isPaused || mode == .all || !selectedRooms.isEmpty)
+        guard !busy else { return false }
+        if status.isCleaning || status.isPaused { return true }
+        switch mode {
+        case .all: return true
+        case .room: return !selectedRooms.isEmpty
+        case .zone: return !areas.isEmpty
+        }
+    }
+
+    // MARK: Zones
+
+    /// Adds a freehand shape traced through display-cell points. Returns a message when it can't be added.
+    @discardableResult
+    func addArea(_ points: [CGPoint]) -> String? {
+        guard let map, points.count >= 3 else { return nil }
+        let used = areas.reduce(0) { $0 + $1.rects.count }
+        guard used < Self.maxRects else { return "That's as much as the robot takes. Remove a shape first." }
+        let outline = points.map(map.mapPoint)
+        guard let rects = CleanArea.cover(outline, grid: map.grid, maxRects: Self.maxRects - used) else {
+            return used == 0 ? "That shape is too small to clean." : "Not enough room left for that shape. Remove one first."
+        }
+        areas.append(CleanArea(outline: outline, rects: rects))
+        return nil
+    }
+
+    func removeArea(_ id: CleanArea.ID) { areas.removeAll { $0.id == id } }
+
+    func cleanZones() {
+        let rects = areas.flatMap(\.rects)
+        guard !rects.isEmpty else { return }
+        let fan = status.suction ?? 1
+        let water = status.water ?? 2
+        // Each area: [x0, y0, x1, y1, passes, suction, water] in millimetres.
+        let list = rects.map { z in JSON.array(z.bounds.map { .int($0) } + [1, .int(fan), .int(water)]) }
+        let payload = (["areas": .array(list)] as JSON).dumps()
+        run {
+            try await $0.action($1, siid: 4, aiid: 1, in: [
+                ["piid": 1, "value": 19],  // status: zone cleaning
+                ["piid": 10, "value": .string(payload)],
+            ])
+        }
     }
 
     func toggleRoom(_ id: Int) {
